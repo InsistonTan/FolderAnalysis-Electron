@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <!-- https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CSP -->
+    <!--<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; script-src * 'unsafe-inline'">-->
+    <title>硬盘占用分析</title>
+    <script src="js/lib/vue.global.js"></script>
+    <script src="js/index.js"></script>
+    <link rel="stylesheet" type="text/css" href="css/index.css">
+</head>
+<body>
+<div id="app">
+    <div class="search-div">
+        <div class="search-div-back" @click="back()">
+            <img src="assets/back.png" width="30" height="30">
+        </div>
+        <div>
+            <input type="text" v-model="currentUrl" @keydown.enter="selectFolder(currentUrl)">
+        </div>
+
+    </div>
+    <div class="content">
+        <!--首页-->
+        <div v-show="isHomePage" class="content-home">
+            <div class="content-item" v-for="item in diskStage" @click="selectFolder(item.caption + '/')">
+                <div class="content-item-icon">
+                    <img src="assets/disk-icon.png">
+                </div>
+                <div class="content-item-div">
+                    <div style="font-size: 14px;">{{item.caption}}</div>
+                    <div class="content-item-div-progress">
+                        <progress :max="item.size" :value="item.used"></progress>
+                    </div>
+                    <div class="content-item-div-bottom">{{item.freeStr}} 可用，共 {{item.sizeStr}}</div>
+                </div>
+            </div>
+        </div>
+
+        <!--子页面-->
+        <div v-show="!isHomePage">
+            <div class="sub-page-item-row"
+                 style="position: fixed; top:61px;background-color: white;color: rgb(76, 96, 122);">
+                <div class="sub-page-item-row-name" style="border-right: rgba(153,165,172,0.49) solid 1px;">名称</div>
+                <div class="sub-page-item-row-date" style="border-right: rgba(153,165,172,0.49) solid 1px;">修改日期</div>
+                <div class="sub-page-item-row-type" style="border-right: rgba(153,165,172,0.49) solid 1px;">类型</div>
+                <div class="sub-page-item-row-size" style="border-right: rgba(153,165,172,0.49) solid 1px;">大小</div>
+            </div>
+            <div style="height: 40px;"></div>
+            <div class="sub-page-item" v-for="item in folderList"
+                 @click="item.isDirectory ? selectFolder(item.path) : null">
+                <div class="sub-page-item-row">
+                    <div class="sub-page-item-row-name">
+                        <img v-if="item.isDirectory" src="assets/folder.png" width="25" height="25">
+                        <img v-else src="assets/file.png" width="26" height="28">
+                        <div>
+                            {{item.name}}
+                        </div>
+                    </div>
+                    <div class="sub-page-item-row-date">{{item.updateTime}}</div>
+                    <div class="sub-page-item-row-type">{{item.isDirectory ? '文件夹' : '文件'}}</div>
+                    <div class="sub-page-item-row-size">{{beautySize(item.size)}}</div>
+                </div>
+            </div>
+            <div v-if="readDirErr" style="text-align: center;font-size: 13px;margin-top: 10px;width:800px;">文件夹不存在</div>
+        </div>
+    </div>
+    <div class="footer">designed by Tan | 查看各文件夹占用存储情况 | 1.0.1</div>
+    <div v-show="reading" class="blank_div">
+       正在分析文件夹大小，请耐心等待...
+    </div>
+</div>
+</body>
+
+<script>
+    const {createApp, ref, nextTick} = Vue
+
+    createApp({
+        setup() {
+            const diskStage = ref([]);
+            const isHomePage = ref(true);
+            const currentUrl = ref("");
+            const folderList = ref([]);
+            const readDirErr = ref(false);
+            const reading = ref(false);
+
+            /**
+             * 获取磁盘使用情况
+             */
+            function getDiskStage() {
+                const a = setInterval(() => {
+                    diskStage.value = JSON.parse(window.localStorage.getItem('diskStage'));
+                    if (diskStage.value && diskStage.value.length > 0) {
+                        clearInterval(a);
+                    }
+                }, 100);
+            }
+
+            function back() {
+                const path = currentUrl.value;
+                if (!path) {
+                    return;
+                }
+
+                selectFolder(path.replaceAll(new RegExp("[^/]+/$", "g"), ''));
+            }
+
+            /**
+             * 监听点击文件夹事件
+             * @param folderName 文件夹名称
+             */
+            function selectFolder(folderName) {
+                console.log('文件夹路径：' + folderName);
+
+                readDirErr.value = false;
+
+                if (!folderName || folderName === '/' || folderName === '\\') {
+                    isHomePage.value = true;
+                    currentUrl.value = '';
+                    return;
+                }
+
+                folderName = folderName.replaceAll("\\", "/");
+                if (!folderName.endsWith("/")) {
+                    folderName += '/';
+                }
+
+                currentUrl.value = folderName;
+
+                isHomePage.value = false;
+
+                folderList.value = [];
+
+                getFolderList(currentUrl.value);
+            }
+
+            /**
+             * 获取路径下所有文件夹和文件
+             * @param path
+             */
+            function getFolderList(path) {
+                folderList.value = [];
+
+                // 检查缓存，如果在缓存里面有了，就直接拿
+                const cacheList = window.sessionStorage.getItem(path);
+                if (cacheList) {
+                    folderList.value = JSON.parse(cacheList);
+                    return;
+                }
+
+                reading.value = true;
+                // dom渲染完成后执行
+                setTimeout(()=> {
+                    try {
+                        const filesMap = window.electron.getFiles(path);
+                        let fileList = [];
+
+                        // 将map转为list
+                        for (let key in filesMap) {
+                            fileList.push(filesMap[key]);
+                        }
+
+                        // 按照大小倒序进行排序
+                        fileList = fileList.sort(((a, b) => {
+                            return b['size'] - a['size'];
+                        }));
+
+                        folderList.value = fileList;
+
+                        // 存入sessionStorage，缓存当前结果
+                        window.sessionStorage.setItem(path, JSON.stringify(fileList));
+
+                        reading.value = false;
+                    } catch (e) {
+                        reading.value = false;
+                        readDirErr.value = true;
+                    }
+                }, 50);
+            }
+
+            function beautySize(size) {
+                if (size === 0) {
+                    return '0';
+                }
+
+                let tempSize = Number.parseInt(size, 10);
+                const unitArray = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+                for (let i = 0; ; i++) {
+                    if (tempSize > 1024) {
+                        tempSize = tempSize / parseFloat('1024');
+                    } else {
+                        if (parseFloat(tempSize.toFixed(0)) === parseFloat(tempSize.toFixed(1))) {
+                            return tempSize.toFixed(0) + ' ' + unitArray[i];
+                        }
+
+                        return tempSize.toFixed(1) + ' ' + unitArray[i];
+                    }
+                }
+            }
+
+            return {
+                diskStage,
+                getDiskStage,
+                isHomePage,
+                currentUrl,
+                selectFolder,
+                folderList,
+                beautySize,
+                readDirErr,
+                back,
+                reading
+            }
+        },
+        mounted() {
+            this.getDiskStage();
+        },
+
+    }).mount('#app');
+</script>
+</html>
